@@ -14,7 +14,7 @@ http://{$DOMAIN} {
         reverse_proxy clickhouse:8123
     }
 
-    # --- ClickHouse Play UI + static assets (không strip prefix) ---
+    # --- ClickHouse Play UI static assets ---
     handle /play* {
         reverse_proxy clickhouse:8123
     }
@@ -25,6 +25,14 @@ http://{$DOMAIN} {
         reverse_proxy clickhouse:8123
     }
     handle /favicon.ico {
+        reverse_proxy clickhouse:8123
+    }
+
+    # --- ClickHouse API calls từ Play UI (POST/GET về root với CH params) ---
+    @ch_api {
+        query add_http_cors_header=*
+    }
+    handle @ch_api {
         reverse_proxy clickhouse:8123
     }
 
