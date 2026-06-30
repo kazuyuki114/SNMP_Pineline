@@ -14,7 +14,7 @@ from pysnmp.hlapi.asyncio import (
     ContextData,
     ObjectType,
     ObjectIdentity,
-    getCmd,
+    get_cmd,
 )
 
 # --- Configuration ---
@@ -22,7 +22,6 @@ COMMUNITY = 'public'
 INTERVAL = 15
 
 # --- ClickHouse Configuration ---
-# Database/table must already exist.
 CLICKHOUSE_DATABASE = "snmp"
 CLICKHOUSE_TABLE = "snmp_labeled_final"
 CLICKHOUSE_HOST = ""
@@ -34,6 +33,9 @@ CLICKHOUSE_SECURE = False
 DEFAULT_LABEL = "Normal"
 DEFAULT_LABEL_ID = 0
 
+# Single shared SNMP engine (pysnmp v6 requirement)
+snmp_engine = SnmpEngine()
+
 # Define all devices to poll: name -> IP
 DEVICES = {
     'device1': '172.16.0.80',
@@ -41,7 +43,6 @@ DEVICES = {
     'device3': '10.0.0.1',
     'device4': '192.168.10.10'
 }
-
 
 DEVICE_INTERFACES = {
     'device1': {
@@ -114,16 +115,15 @@ GLOBAL_OIDS = {
 }
 
 # --- Per-interface OID templates ---
-# These are the interface counters. The ifIndex is appended at the end.
 INTERFACE_OID_TEMPLATES = {
-    'ifInOctets':     '1.3.6.1.2.1.2.2.1.10',
-    'ifInUcastPkts':  '1.3.6.1.2.1.2.2.1.11',
-    'ifInNUcastPkts': '1.3.6.1.2.1.2.2.1.12',
-    'ifInDiscards':   '1.3.6.1.2.1.2.2.1.13',
-    'ifOutOctets':    '1.3.6.1.2.1.2.2.1.16',
-    'ifOutUcastPkts': '1.3.6.1.2.1.2.2.1.17',
-    'ifOutNUcastPkts':'1.3.6.1.2.1.2.2.1.18',
-    'ifOutDiscards':  '1.3.6.1.2.1.2.2.1.19',
+    'ifInOctets':      '1.3.6.1.2.1.2.2.1.10',
+    'ifInUcastPkts':   '1.3.6.1.2.1.2.2.1.11',
+    'ifInNUcastPkts':  '1.3.6.1.2.1.2.2.1.12',
+    'ifInDiscards':    '1.3.6.1.2.1.2.2.1.13',
+    'ifOutOctets':     '1.3.6.1.2.1.2.2.1.16',
+    'ifOutUcastPkts':  '1.3.6.1.2.1.2.2.1.17',
+    'ifOutNUcastPkts': '1.3.6.1.2.1.2.2.1.18',
+    'ifOutDiscards':   '1.3.6.1.2.1.2.2.1.19',
 }
 
 
@@ -131,7 +131,6 @@ def load_env(path=".env"):
     env = {}
     if not os.path.exists(path):
         return env
-
     with open(path, encoding="utf-8") as file:
         for raw_line in file:
             line = raw_line.strip()
@@ -166,7 +165,6 @@ class ClickHouseHTTP:
         headers = dict(self.base_headers)
         headers["Content-Type"] = content_type
         path = self.base_path + "/?" + urlencode({"query": sql})
-
         self.conn.request("POST", path, body=body, headers=headers)
         response = self.conn.getresponse()
         response_body = response.read().decode("utf-8", errors="replace")
@@ -179,16 +177,11 @@ class ClickHouseHTTP:
 
 
 def build_oids_for_device(device_name):
-    """Build the full OID dictionary for a device: global OIDs + per-interface OIDs."""
-    oids = dict(GLOBAL_OIDS)  # Start with a copy of global OIDs
-
+    oids = dict(GLOBAL_OIDS)
     interfaces = DEVICE_INTERFACES.get(device_name, {})
     for iface_name, if_index in interfaces.items():
         for counter_name, oid_base in INTERFACE_OID_TEMPLATES.items():
-            # e.g. "ifInOctets_enp0s3" -> "1.3.6.1.2.1.2.2.1.10.2"
-            col_name = f"{counter_name}_{iface_name}"
-            oids[col_name] = f"{oid_base}.{if_index}"
-
+            oids[f"{counter_name}_{iface_name}"] = f"{oid_base}.{if_index}"
     return oids
 
 
@@ -200,38 +193,24 @@ def build_columns(device_configs):
             if col_name not in seen:
                 all_oid_columns.append(col_name)
                 seen.add(col_name)
-
     return ['Timestamp', 'Device', 'IP'] + all_oid_columns + ['label', 'label_id']
-
-
-def _parse_snmp_val(val_str):
-    """Convert a prettyPrint() string to int, returning 0 for non-numeric/missing values."""
-    if val_str in ('noSuchObject', 'noSuchInstance', 'endOfMibView', ''):
-        return 0
-    try:
-        return int(val_str)
-    except (ValueError, TypeError):
-        return 0
 
 
 def rows_to_csv(rows, columns):
     output = io.StringIO()
     writer = csv.DictWriter(output, fieldnames=columns, extrasaction="ignore")
     writer.writeheader()
-
     for row in rows:
         normalized = {col: row.get(col, 0) for col in columns}
         normalized['label'] = row.get('label', DEFAULT_LABEL)
         normalized['label_id'] = row.get('label_id', DEFAULT_LABEL_ID)
         writer.writerow(normalized)
-
     return output.getvalue()
 
 
 def insert_rows(client, rows, columns):
     if not rows:
         return
-
     insert_sql = (
         f"INSERT INTO {full_table_name(CLICKHOUSE_DATABASE, CLICKHOUSE_TABLE)} "
         f"({column_list(columns)}) FORMAT CSVWithNames"
@@ -240,51 +219,42 @@ def insert_rows(client, rows, columns):
     client.query(insert_sql, body=csv_body.encode("utf-8"), content_type="text/csv")
 
 
-async def poll_all_oids(ip, community, oids_dict):
-    """Fetch all OIDs in batched GET requests using a single SnmpEngine per device."""
-    names = list(oids_dict.keys())
-    oids_list = [oids_dict[n] for n in names]
-    results = {n: 0 for n in names}
-
-    BATCH_SIZE = 20  # Max OIDs per single SNMP GET PDU
-    engine = SnmpEngine()
-    nonzero = 0
-
-    for i in range(0, len(names), BATCH_SIZE):
-        batch_names = names[i:i + BATCH_SIZE]
-        batch_oids = oids_list[i:i + BATCH_SIZE]
+async def get_snmp_value(ip, community, oid):
+    try:
+        target = await UdpTransportTarget.create((ip, 161), timeout=2.0, retries=2)
+        errorIndication, errorStatus, errorIndex, varBinds = await get_cmd(
+            snmp_engine,
+            CommunityData(community),
+            target,
+            ContextData(),
+            ObjectType(ObjectIdentity(oid))
+        )
+        if errorIndication or errorStatus:
+            return 0
+        val = varBinds[0][1].prettyPrint()
+        if 'No Such' in val or 'noSuch' in val or 'endOfMib' in val or val == '':
+            return 0
         try:
-            errorIndication, errorStatus, errorIndex, varBinds = await getCmd(
-                engine,
-                CommunityData(community),
-                UdpTransportTarget((ip, 161), timeout=2.0, retries=1),
-                ContextData(),
-                *[ObjectType(ObjectIdentity(oid)) for oid in batch_oids]
-            )
-            if errorIndication:
-                print(f"\n  [{ip}] SNMP error: {errorIndication}", flush=True)
-                continue
-            if errorStatus:
-                err_idx = int(errorIndex) - 1 if errorIndex else 0
-                bad_oid = batch_oids[err_idx] if 0 <= err_idx < len(batch_oids) else '?'
-                print(f"\n  [{ip}] SNMP status error at {bad_oid}: {errorStatus.prettyPrint()}", flush=True)
-                continue
-            for j, var_bind in enumerate(varBinds):
-                v = _parse_snmp_val(var_bind[1].prettyPrint())
-                results[batch_names[j]] = v
-                if v != 0:
-                    nonzero += 1
-        except Exception as e:
-            print(f"\n  [{ip}] Exception in batch {i // BATCH_SIZE + 1}: {e}", flush=True)
+            return int(val)
+        except (ValueError, TypeError):
+            return 0
+    except Exception:
+        return 0
 
-    if nonzero == 0:
+
+async def poll_all_oids(ip, community, oids_dict):
+    names = list(oids_dict.keys())
+    coros = [get_snmp_value(ip, community, oids_dict[name]) for name in names]
+    values = await asyncio.gather(*coros)
+    results = dict(zip(names, values))
+
+    if all(v == 0 for v in values):
         print(f"\n  [{ip}] WARNING: all {len(names)} OIDs returned 0 — device unreachable or SNMP misconfigured", flush=True)
 
     return results
 
 
 async def poll_device(device_name, device_ip, oids_dict, timestamp):
-    """Poll a single device and return row data."""
     row_data = {
         'Timestamp': timestamp,
         'Device': device_name,
@@ -292,10 +262,8 @@ async def poll_device(device_name, device_ip, oids_dict, timestamp):
         'label': DEFAULT_LABEL,
         'label_id': DEFAULT_LABEL_ID,
     }
-
     oid_results = await poll_all_oids(device_ip, COMMUNITY, oids_dict)
     row_data.update(oid_results)
-
     return row_data
 
 
@@ -308,14 +276,10 @@ async def main_loop():
         or "changeme"
     )
 
-    # Pre-build OID dicts for each device
     device_configs = {}
     for device_name, device_ip in DEVICES.items():
         oids = build_oids_for_device(device_name)
-        device_configs[device_name] = {
-            'ip': device_ip,
-            'oids': oids,
-        }
+        device_configs[device_name] = {'ip': device_ip, 'oids': oids}
 
     clickhouse_columns = build_columns(device_configs)
     total_oids = sum(len(cfg['oids']) for cfg in device_configs.values())
@@ -349,7 +313,6 @@ async def main_loop():
 
             print(f"[{timestamp}] Polling {len(DEVICES)} devices...", end=" ", flush=True)
 
-            # Poll all devices concurrently
             tasks = [
                 poll_device(device_name, cfg['ip'], cfg['oids'], timestamp)
                 for device_name, cfg in device_configs.items()
@@ -363,7 +326,6 @@ async def main_loop():
             except Exception as e:
                 print(f"ClickHouse insert failed: {e}")
 
-            # Smart Sleep
             elapsed = time.time() - start_time
             time_to_wait = max(0, INTERVAL - elapsed)
             await asyncio.sleep(time_to_wait)
@@ -373,6 +335,6 @@ async def main_loop():
     finally:
         client.close()
 
-# --- Main Execution ---
+
 if __name__ == "__main__":
     asyncio.run(main_loop())
