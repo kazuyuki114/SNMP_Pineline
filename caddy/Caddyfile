@@ -8,9 +8,23 @@ http://{$DOMAIN} {
         reverse_proxy grafana:3000
     }
 
-    # --- ClickHouse HTTP API ---
+    # --- ClickHouse HTTP API (push data, query qua curl) ---
     handle /clickhouse/* {
         uri strip_prefix /clickhouse
+        reverse_proxy clickhouse:8123
+    }
+
+    # --- ClickHouse Play UI + static assets (không strip prefix) ---
+    handle /play* {
+        reverse_proxy clickhouse:8123
+    }
+    handle /js/* {
+        reverse_proxy clickhouse:8123
+    }
+    handle /css/* {
+        reverse_proxy clickhouse:8123
+    }
+    handle /favicon.ico {
         reverse_proxy clickhouse:8123
     }
 
