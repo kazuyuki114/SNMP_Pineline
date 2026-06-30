@@ -7,7 +7,15 @@ import os
 import asyncio
 from datetime import datetime
 from urllib.parse import urlencode
-from pysnmp.hlapi.asyncio import *
+from pysnmp.hlapi.asyncio import (
+    SnmpEngine,
+    CommunityData,
+    UdpTransportTarget,
+    ContextData,
+    ObjectType,
+    ObjectIdentity,
+    getCmd,
+)
 
 # --- Configuration ---
 COMMUNITY = 'public'
@@ -196,26 +204,13 @@ def build_columns(device_configs):
     return ['Timestamp', 'Device', 'IP'] + all_oid_columns + ['label', 'label_id']
 
 
-async def get_snmp_value(ip, community, oid):
-    """
-    Fetches a single OID. Returns 0 on error/null to ensure math (like deltas) works later.
-    """
+def _parse_snmp_val(val_str):
+    """Convert a prettyPrint() string to int, returning 0 for non-numeric/missing values."""
+    if val_str in ('noSuchObject', 'noSuchInstance', 'endOfMibView', ''):
+        return 0
     try:
-        errorIndication, errorStatus, errorIndex, varBinds = await getCmd(
-            SnmpEngine(),
-            CommunityData(community),
-            UdpTransportTarget((ip, 161), timeout=0.5, retries=1),
-            ContextData(),
-            ObjectType(ObjectIdentity(oid))
-        )
-
-        if errorIndication or errorStatus:
-            return 0
-        else:
-            val = varBinds[0][1].prettyPrint()
-            return val if val != '' else 0
-
-    except Exception:
+        return int(val_str)
+    except (ValueError, TypeError):
         return 0
 
 
@@ -246,11 +241,46 @@ def insert_rows(client, rows, columns):
 
 
 async def poll_all_oids(ip, community, oids_dict):
-    """Fetch all OIDs concurrently for better performance."""
+    """Fetch all OIDs in batched GET requests using a single SnmpEngine per device."""
     names = list(oids_dict.keys())
-    coros = [get_snmp_value(ip, community, oids_dict[name]) for name in names]
-    values = await asyncio.gather(*coros)
-    return dict(zip(names, values))
+    oids_list = [oids_dict[n] for n in names]
+    results = {n: 0 for n in names}
+
+    BATCH_SIZE = 20  # Max OIDs per single SNMP GET PDU
+    engine = SnmpEngine()
+    nonzero = 0
+
+    for i in range(0, len(names), BATCH_SIZE):
+        batch_names = names[i:i + BATCH_SIZE]
+        batch_oids = oids_list[i:i + BATCH_SIZE]
+        try:
+            errorIndication, errorStatus, errorIndex, varBinds = await getCmd(
+                engine,
+                CommunityData(community),
+                UdpTransportTarget((ip, 161), timeout=2.0, retries=1),
+                ContextData(),
+                *[ObjectType(ObjectIdentity(oid)) for oid in batch_oids]
+            )
+            if errorIndication:
+                print(f"\n  [{ip}] SNMP error: {errorIndication}", flush=True)
+                continue
+            if errorStatus:
+                err_idx = int(errorIndex) - 1 if errorIndex else 0
+                bad_oid = batch_oids[err_idx] if 0 <= err_idx < len(batch_oids) else '?'
+                print(f"\n  [{ip}] SNMP status error at {bad_oid}: {errorStatus.prettyPrint()}", flush=True)
+                continue
+            for j, var_bind in enumerate(varBinds):
+                v = _parse_snmp_val(var_bind[1].prettyPrint())
+                results[batch_names[j]] = v
+                if v != 0:
+                    nonzero += 1
+        except Exception as e:
+            print(f"\n  [{ip}] Exception in batch {i // BATCH_SIZE + 1}: {e}", flush=True)
+
+    if nonzero == 0:
+        print(f"\n  [{ip}] WARNING: all {len(names)} OIDs returned 0 — device unreachable or SNMP misconfigured", flush=True)
+
+    return results
 
 
 async def poll_device(device_name, device_ip, oids_dict, timestamp):
