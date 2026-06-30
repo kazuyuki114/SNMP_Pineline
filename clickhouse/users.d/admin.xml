@@ -1,0 +1,15 @@
+<clickhouse>
+    <users>
+        <admin>
+            <!-- Mật khẩu được đặt qua env CLICKHOUSE_PASSWORD, file này chỉ cấu hình quyền -->
+            <networks>
+                <!-- Cho phép kết nối từ bất kỳ IP nào (Caddy sẽ làm proxy) -->
+                <ip>::/0</ip>
+            </networks>
+            <profile>default</profile>
+            <quota>default</quota>
+            <access_management>1</access_management>
+            <named_collection_control>1</named_collection_control>
+        </admin>
+    </users>
+</clickhouse>

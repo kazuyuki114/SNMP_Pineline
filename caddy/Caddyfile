@@ -1,0 +1,33 @@
+# Thay YOUR_DOMAIN bằng domain hoặc IP public của bạn.
+# Nếu dùng IP (không có domain): đổi thành `http://` và bỏ TLS block.
+
+{$DOMAIN} {
+    # --- Grafana UI ---
+    handle /grafana/* {
+        reverse_proxy grafana:3000
+    }
+
+    # --- ClickHouse HTTP API (có xác thực) ---
+    # Endpoint này cho phép push data qua HTTP từ bên ngoài
+    handle /clickhouse/* {
+        uri strip_prefix /clickhouse
+        reverse_proxy clickhouse:8123
+    }
+
+    # Chặn tất cả route còn lại
+    handle {
+        respond "Not Found" 404
+    }
+
+    # Tự động HTTPS qua Let's Encrypt (chỉ hoạt động với domain thật)
+    tls {
+        protocols tls1.2 tls1.3
+    }
+
+    encode gzip
+
+    log {
+        output file /data/access.log
+        format json
+    }
+}

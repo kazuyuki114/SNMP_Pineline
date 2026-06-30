@@ -1,0 +1,13 @@
+<clickhouse>
+    <!-- Chỉ lắng nghe trong container, Caddy sẽ proxy từ ngoài vào -->
+    <listen_host>0.0.0.0</listen_host>
+
+    <!-- Giới hạn kích thước kết nối đồng thời -->
+    <max_connections>1000</max_connections>
+
+    <!-- HTTP interface settings -->
+    <http_server_default_response><![CDATA[<html><body>ClickHouse HTTP interface</body></html>]]></http_server_default_response>
+
+    <!-- Tắt truy cập gRPC nếu không dùng -->
+    <!-- <grpc_port>9100</grpc_port> -->
+</clickhouse>
