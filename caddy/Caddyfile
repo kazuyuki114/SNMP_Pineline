@@ -1,14 +1,13 @@
-# Thay YOUR_DOMAIN bằng domain hoặc IP public của bạn.
-# Nếu dùng IP (không có domain): đổi thành `http://` và bỏ TLS block.
+# DuckDNS domain, HTTP only (không có TLS)
+# Đặt DOMAIN=yourname.duckdns.org trong file .env
 
-{$DOMAIN} {
+http://{$DOMAIN} {
     # --- Grafana UI ---
     handle /grafana/* {
         reverse_proxy grafana:3000
     }
 
-    # --- ClickHouse HTTP API (có xác thực) ---
-    # Endpoint này cho phép push data qua HTTP từ bên ngoài
+    # --- ClickHouse HTTP API ---
     handle /clickhouse/* {
         uri strip_prefix /clickhouse
         reverse_proxy clickhouse:8123
@@ -17,11 +16,6 @@
     # Chặn tất cả route còn lại
     handle {
         respond "Not Found" 404
-    }
-
-    # Tự động HTTPS qua Let's Encrypt (chỉ hoạt động với domain thật)
-    tls {
-        protocols tls1.2 tls1.3
     }
 
     encode gzip
