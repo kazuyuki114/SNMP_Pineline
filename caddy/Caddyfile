@@ -3,6 +3,7 @@
 
 http://{$DOMAIN} {
     # --- Grafana UI ---
+    redir /grafana /grafana/ 301
     handle /grafana/* {
         reverse_proxy grafana:3000
     }
