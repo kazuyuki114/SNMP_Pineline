@@ -1,7 +1,5 @@
-# DuckDNS domain, HTTP only (không có TLS)
-# Đặt DOMAIN=yourname.duckdns.org trong file .env
 
-http://{$DOMAIN} {
+{$DOMAIN} {
     # --- Grafana UI ---
     redir /grafana /grafana/ 301
     handle /grafana/* {
@@ -14,7 +12,6 @@ http://{$DOMAIN} {
         reverse_proxy clickhouse:8123
     }
 
-    # --- ClickHouse Play UI static assets ---
     handle /play* {
         reverse_proxy clickhouse:8123
     }
@@ -28,7 +25,6 @@ http://{$DOMAIN} {
         reverse_proxy clickhouse:8123
     }
 
-    # --- ClickHouse API calls từ Play UI (POST/GET về root với CH params) ---
     @ch_api {
         query add_http_cors_header=*
     }
@@ -36,7 +32,6 @@ http://{$DOMAIN} {
         reverse_proxy clickhouse:8123
     }
 
-    # Chặn tất cả route còn lại
     handle {
         respond "Not Found" 404
     }

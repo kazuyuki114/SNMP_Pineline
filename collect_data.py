@@ -1,9 +1,8 @@
-import csv
 import base64
+import csv
 import http.client
 import io
 import time
-import os
 import asyncio
 from datetime import datetime
 from urllib.parse import urlencode
@@ -21,13 +20,14 @@ from pysnmp.hlapi.asyncio import (
 COMMUNITY = 'public'
 INTERVAL = 15
 
-# --- ClickHouse Configuration ---
+CLICKHOUSE_HOST = ""
+CLICKHOUSE_HTTP_PORT = 443
+CLICKHOUSE_BASE_PATH = "/clickhouse"
+CLICKHOUSE_SECURE = True
+CLICKHOUSE_USER = ""
+CLICKHOUSE_PASSWORD = ""
 CLICKHOUSE_DATABASE = "snmp"
 CLICKHOUSE_TABLE = "snmp_labeled_final"
-CLICKHOUSE_HOST = ""
-CLICKHOUSE_HTTP_PORT = 80
-CLICKHOUSE_BASE_PATH = "/clickhouse"
-CLICKHOUSE_SECURE = False
 
 # Default label for live SNMP data.
 DEFAULT_LABEL = "Normal"
@@ -125,20 +125,6 @@ INTERFACE_OID_TEMPLATES = {
     'ifOutNUcastPkts': '1.3.6.1.2.1.2.2.1.18',
     'ifOutDiscards':   '1.3.6.1.2.1.2.2.1.19',
 }
-
-
-def load_env(path=".env"):
-    env = {}
-    if not os.path.exists(path):
-        return env
-    with open(path, encoding="utf-8") as file:
-        for raw_line in file:
-            line = raw_line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            env[key.strip()] = value.strip().strip("'\"")
-    return env
 
 
 def quote_identifier(identifier):
@@ -268,14 +254,6 @@ async def poll_device(device_name, device_ip, oids_dict, timestamp):
 
 
 async def main_loop():
-    env = load_env()
-    clickhouse_user = env.get("CLICKHOUSE_USER") or os.getenv("CLICKHOUSE_USER") or "admin"
-    clickhouse_password = (
-        env.get("CLICKHOUSE_PASSWORD")
-        or os.getenv("CLICKHOUSE_PASSWORD")
-        or "changeme"
-    )
-
     device_configs = {}
     for device_name, device_ip in DEVICES.items():
         oids = build_oids_for_device(device_name)
@@ -300,8 +278,8 @@ async def main_loop():
     client = ClickHouseHTTP(
         CLICKHOUSE_HOST,
         CLICKHOUSE_HTTP_PORT,
-        clickhouse_user,
-        clickhouse_password,
+        CLICKHOUSE_USER,
+        CLICKHOUSE_PASSWORD,
         secure=CLICKHOUSE_SECURE,
         base_path=CLICKHOUSE_BASE_PATH,
     )

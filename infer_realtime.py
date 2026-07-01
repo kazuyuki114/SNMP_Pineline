@@ -12,7 +12,9 @@ Usage:
     python infer_realtime.py
 """
 
+import base64
 import csv
+import http.client
 import io
 import os
 import pickle
@@ -20,21 +22,44 @@ import sys
 import time
 from collections import deque
 from datetime import datetime
+from urllib.parse import urlencode
 
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 
-sys.path.insert(0, os.path.dirname(__file__))
-from collect_data import (
-    ClickHouseHTTP, load_env,
-    CLICKHOUSE_HOST, CLICKHOUSE_HTTP_PORT,
-    CLICKHOUSE_BASE_PATH, CLICKHOUSE_SECURE,
-    CLICKHOUSE_DATABASE,
-)
-
 INTERVAL = 15  # giây
+
+CLICKHOUSE_HOST = ""
+CLICKHOUSE_HTTP_PORT = 443
+CLICKHOUSE_BASE_PATH = "/clickhouse"
+CLICKHOUSE_SECURE = True
+CLICKHOUSE_USER = ""
+CLICKHOUSE_PASSWORD = ""
+
+
+class ClickHouseHTTP:
+    def __init__(self, host, port, user, password, secure=False, timeout=30, base_path=""):
+        connection_cls = http.client.HTTPSConnection if secure else http.client.HTTPConnection
+        self.conn = connection_cls(host, port, timeout=timeout)
+        self.base_path = base_path.rstrip("/")
+        token = base64.b64encode(f"{user}:{password}".encode("utf-8")).decode("ascii")
+        self.base_headers = {"Authorization": f"Basic {token}"}
+
+    def query(self, sql, body=None, content_type="text/plain; charset=utf-8"):
+        headers = dict(self.base_headers)
+        headers["Content-Type"] = content_type
+        path = self.base_path + "/?" + urlencode({"query": sql})
+        self.conn.request("POST", path, body=body, headers=headers)
+        response = self.conn.getresponse()
+        response_body = response.read().decode("utf-8", errors="replace")
+        if response.status >= 300:
+            raise RuntimeError(f"ClickHouse HTTP {response.status}: {response_body}")
+        return response_body
+
+    def close(self):
+        self.conn.close()
 
 # ---------------------------------------------------------------------------
 # Model (khớp với training)
@@ -140,6 +165,8 @@ def load_artifacts(artifact_dir, torch_device):
     encoder.to(torch_device).eval()
 
     det_art['_type'] = 'gmm' if 'gmm' in det_art else 'mahal'
+    if THRESHOLD_OVERRIDE is not None:
+        det_art['threshold_pct'] = float(THRESHOLD_OVERRIDE)
     return encoder, meta, det_art
 
 
@@ -252,8 +279,9 @@ def fetch_latest_ts(client):
 # Main
 # ---------------------------------------------------------------------------
 
-ARTIFACT_DIR = 'artifact'
-TORCH_DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+ARTIFACT_DIR       = 'artifact'
+TORCH_DEVICE       = 'cuda' if torch.cuda.is_available() else 'cpu'
+THRESHOLD_OVERRIDE = 17.0   # đặt None để dùng threshold gốc từ artifact
 
 
 def main():
@@ -271,13 +299,8 @@ def main():
           f"detector={det_type}, threshold={threshold:.4f}")
 
     # --- ClickHouse client ---
-    env  = load_env()
-    host = CLICKHOUSE_HOST or env.get("CLICKHOUSE_HOST") or os.getenv("CLICKHOUSE_HOST") or "localhost"
-    user = env.get("CLICKHOUSE_USER") or os.getenv("CLICKHOUSE_USER") or "admin"
-    pwd  = env.get("CLICKHOUSE_PASSWORD") or os.getenv("CLICKHOUSE_PASSWORD") or "admin"
-
-    print(f"      ClickHouse: {host}:{CLICKHOUSE_HTTP_PORT}{CLICKHOUSE_BASE_PATH}")
-    client = make_client(host, CLICKHOUSE_HTTP_PORT, user, pwd,
+    print(f"      ClickHouse: {CLICKHOUSE_HOST}:{CLICKHOUSE_HTTP_PORT}{CLICKHOUSE_BASE_PATH}")
+    client = make_client(CLICKHOUSE_HOST, CLICKHOUSE_HTTP_PORT, CLICKHOUSE_USER, CLICKHOUSE_PASSWORD,
                          CLICKHOUSE_BASE_PATH, CLICKHOUSE_SECURE)
 
     # --- Warm-up buffer ---
@@ -375,7 +398,7 @@ def main():
                                 client.close()
                             except Exception:
                                 pass
-                            client = make_client(host, CLICKHOUSE_HTTP_PORT, user, pwd,
+                            client = make_client(CLICKHOUSE_HOST, CLICKHOUSE_HTTP_PORT, CLICKHOUSE_USER, CLICKHOUSE_PASSWORD,
                                                  CLICKHOUSE_BASE_PATH, CLICKHOUSE_SECURE)
 
             except KeyboardInterrupt:
@@ -387,7 +410,7 @@ def main():
                     client.close()
                 except Exception:
                     pass
-                client = make_client(host, CLICKHOUSE_HTTP_PORT, user, pwd,
+                client = make_client(CLICKHOUSE_HOST, CLICKHOUSE_HTTP_PORT, CLICKHOUSE_USER, CLICKHOUSE_PASSWORD,
                                      CLICKHOUSE_BASE_PATH, CLICKHOUSE_SECURE)
 
             elapsed      = time.time() - loop_start
